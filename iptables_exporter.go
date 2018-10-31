@@ -16,20 +16,30 @@ package main
 
 import (
 	"errors"
-	"net/http"
-	"time"
-
+	"github.com/foxdalas/iptables_exporter/iptables"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/log"
 	"github.com/prometheus/common/version"
-	"github.com/retailnext/iptables_exporter/iptables"
 	"gopkg.in/alecthomas/kingpin.v2"
+	"net/http"
+	"regexp"
+	"time"
 )
 
 type collector struct{}
 
 var (
+
+	dropRule = regexp.MustCompile(`-i (\S+) -j DROP`)
+
+	scrapeDropAllInterfaces = prometheus.NewDesc(
+		"iptables_drop_all",
+		"iptables_exporter: drop all policy interfaces",
+		[]string{"interface"},
+		nil,
+	)
+
 	scrapeDurationDesc = prometheus.NewDesc(
 		"iptables_scrape_duration_seconds",
 		"iptables_exporter: Duration of scraping iptables.",
@@ -74,6 +84,7 @@ var (
 )
 
 func (c *collector) Describe(descChan chan<- *prometheus.Desc) {
+	descChan <- scrapeDropAllInterfaces
 	descChan <- scrapeDurationDesc
 	descChan <- scrapeSuccessDesc
 	descChan <- defaultBytesDesc
@@ -116,6 +127,19 @@ func (c *collector) Collect(metricChan chan<- prometheus.Metric) {
 				chain.Policy,
 			)
 			for _, rule := range chain.Rules {
+
+				if dropRule.MatchString(rule.Rule) {
+					iface := dropRule.FindStringSubmatch(rule.Rule)[1]
+					if len(iface) > 1 {
+						metricChan <- prometheus.MustNewConstMetric(
+							scrapeDropAllInterfaces,
+							prometheus.GaugeValue,
+							1,
+							iface,
+						)
+					}
+				}
+
 				metricChan <- prometheus.MustNewConstMetric(
 					rulePacketsDesc,
 					prometheus.CounterValue,
@@ -137,6 +161,7 @@ func (c *collector) Collect(metricChan chan<- prometheus.Metric) {
 	}
 }
 
+
 func main() {
 	// Adapted from github.com/prometheus/node_exporter
 
@@ -144,6 +169,7 @@ func main() {
 		listenAddress = kingpin.Flag("web.listen-address", "Address on which to expose metrics and web interface.").Default(":9455").String()
 		metricsPath   = kingpin.Flag("web.telemetry-path", "Path under which to expose metrics.").Default("/metrics").String()
 	)
+
 
 	log.AddFlags(kingpin.CommandLine)
 	kingpin.Version(version.Print("iptables_exporter"))
